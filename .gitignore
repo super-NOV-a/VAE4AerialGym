@@ -7,6 +7,6 @@ agent_encoder/train_loss/
 agent_encoder/visualization/
 agent_encoder/weights/611*
 agent_encoder/weights/917*
-agent_encoder/weights/*20*
-agent_encoder/weights/*30*
-agent_encoder/weights/*40*
+agent_encoder/weights/520_beta_*_LD_64_epoch_30.pth
+agent_encoder/weights/520_beta_*_LD_64_epoch_40.pth
+agent_encoder/weights/520_beta_*_LD_64_epoch_20.pth
