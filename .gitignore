@@ -1,5 +1,5 @@
 # 示例：忽略文件夹
-测试方法/    # 忽略整个文件夹
+Testing/    # 忽略整个文件夹
 datasets/
 .idea/
 agent_encoder/output_plots/
