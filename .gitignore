@@ -7,3 +7,6 @@ agent_encoder/train_loss/
 agent_encoder/visualization/
 agent_encoder/weights/611*
 agent_encoder/weights/917*
+agent_encoder/weights/*20*
+agent_encoder/weights/*30*
+agent_encoder/weights/*40*
