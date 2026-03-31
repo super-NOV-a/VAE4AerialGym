@@ -29,3 +29,5 @@ python agent_encoder/vae_image_a_test.py
 python agent_encoder/vae_image_batch_test.py
 ```
 
+由于原作者已开源，此仓库不再维护。
+请参考：[Task-Driven Compression for Collision  Encoding Based on Depth Images](https://github.com/ntnu-arl/aerial_gym_simulator/blob/main/aerial_gym/utils/collision_image_generator.py)
