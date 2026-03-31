@@ -1,12 +1,13 @@
-# 示例：忽略文件夹
-Testing/    # 忽略整个文件夹
+# 示例：忽略文件夹   datasets/ # 忽略整个文件夹
 datasets/
+data_test/
 .idea/
-agent_encoder/output_plots/
+agent_encoder/old_runs/
+agent_encoder/runs/
 agent_encoder/train_loss/
 agent_encoder/visualization/
-agent_encoder/weights/611*
-agent_encoder/weights/917*
-agent_encoder/weights/520_beta_*_LD_64_epoch_30.pth
-agent_encoder/weights/520_beta_*_LD_64_epoch_40.pth
-agent_encoder/weights/520_beta_*_LD_64_epoch_20.pth
+agent_encoder/weights/
+agent_encoder/weights_rgb/
+figure_result/figs/
+figure_result/beta*
+little_test/

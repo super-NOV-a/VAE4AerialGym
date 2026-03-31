@@ -1,12 +1,8 @@
 import torch
 import torch.nn as nn
-import cv2
-import os
-import numpy as np
 import matplotlib.pyplot as plt
-from tqdm import tqdm
-from torch.utils.data import Dataset, DataLoader
-from Project_dataset import DepthCollisionDataset, preprocess_image
+from torch.utils.data import DataLoader
+from Project_dataset_show import DepthCollisionDataset, preprocess_image
 
 
 # 定义VAE损失函数
@@ -31,12 +27,11 @@ def vae_loss_function(recon_x, x, mean, logvar, beta_coeff=1.0, latent_dims=64):
 # 测试VAE模型
 def test_vae(model_path, latent_dims, device="cuda", batch_size=256):
     # 加载预训练模型
-    if model_path =="weights/ICRA_test_set_more_sim_data_kld_beta_3_LD_64_epoch_49.pth":
-        from ICRA_VAE import VAE
-        model = VAE(input_dim=1, latent_dim=latent_dims, with_logits=False, inference_mode=True).to(device)
+    if "ICRA" in model_path or "icra" in model_path:
+        from agent_encoder.Net.ICRA_VAE import VAE  # optional path in your codebase
     else:
-        from VAE import VAE
-        model = VAE(input_dim=1, latent_dim=latent_dims, with_logits=False, inference_mode=True).to(device)
+        from agent_encoder.Net.VAE import VAE
+    model = VAE(input_dim=1, latent_dim=latent_dims, with_logits=False, inference_mode=True).to(device)
     model.load_state_dict(torch.load(model_path))
     model.eval()
 
@@ -90,13 +85,13 @@ def plot_results(depth, original, reconstructed, n_images=5):
 
         # 显示原始碰撞图像
         plt.subplot(3, n_images, i + 1+ n_images)
-        plt.imshow(original[i, 0])
+        plt.imshow(original[i, 0], cmap="gray")
         plt.title("Collision")
         plt.axis("off")
 
         # 显示重构后的图像
         plt.subplot(3, n_images, i + 1 + 2*n_images)
-        plt.imshow(reconstructed[i, 0])
+        plt.imshow(reconstructed[i, 0], cmap="gray")
         plt.title("Reconstructed")
         plt.axis("off")
 
@@ -107,14 +102,15 @@ def plot_results(depth, original, reconstructed, n_images=5):
 # 该程序用于测试 VAE 模型的（深度2膨胀）重构性能
 if __name__ == "__main__":
     # 参数设置
-    mark = 520    # 1=0.0078  2=0.0074  3=0.0089    5=0.0099    6=0.0098
-    BETA = 10
+    mark = 110    # 1=0.0078  2=0.0074  3=0.0089    5=0.0099    6=0.0098    110是碰撞 990是原始深度
+    BETA = 1
     latent_dims = 64
     epoch_off = 10  # 修改后的 epoch_off 值
 
     # model_path = "weights/beta_vae_300.pth"   # vanilla VAE 没有碰撞编码
     model_path = f"weights/{mark}_beta_{BETA}_LD_{latent_dims}_epoch_{int(epoch_off)}.pth"  # 0.0078
     # model_path = "weights/ICRA_test_set_more_sim_data_kld_beta_3_LD_64_epoch_49.pth"  # 0.0132
+    # model_path = "/home/niu/workspaces/VAE_ws/agent_encoder/weights/dc_vae_beta1.0_LD_64_epoch_30.pth",
     #ICRA数据拟合： 见 input_r_loss_results.txt 文件测试结果
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

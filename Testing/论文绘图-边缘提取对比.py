@@ -1,4 +1,5 @@
 import math
+import os
 import time
 import numpy as np
 import cv2
@@ -96,31 +97,6 @@ def dilate_zero_mask(zero_mask, dilation_iterations=1):
 # def generate_edges_from_depth(depth_map, zero_mask, edge_threshold_low=30, edge_threshold_high=50):
 #     edges = cv2.Canny(depth_map, edge_threshold_low, edge_threshold_high)
 #     return depth_map, edges
-
-def generate_edges_from_depth(depth_map, zero_mask, edge_threshold_low=30, edge_threshold_high=50):
-    # 对zero_mask进行膨胀操作，扩大零值区域
-    dilated_zero_mask = dilate_zero_mask(zero_mask, dilation_iterations=1)
-
-    # 将膨胀后的零值掩膜应用于深度图，填充零值区域边界
-    depth_map_filled = depth_map.copy()
-    depth_map_filled[dilated_zero_mask == 1] = 255  # 或者使用周围像素的平均值进行填充
-
-    hist_eq_depth = cv2.equalizeHist(depth_map_filled)  # 直方图均衡化
-    normalized_depth = cv2.normalize(hist_eq_depth, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    edges = cv2.Canny(normalized_depth, edge_threshold_low, edge_threshold_high)
-
-    kernel_size = 3
-    kernel = np.ones((kernel_size, kernel_size), np.uint8)
-    filtered_depth_map = cv2.erode(depth_map_filled, kernel, iterations=1)
-
-    edge_depth = depth_map_filled.copy()
-    edge_depth[:, :] = 255
-    edge_depth[edges != 0] = filtered_depth_map[edges != 0]
-
-    # 再次使用zero_mask过滤掉零值区域的边缘
-    edge_depth[zero_mask == 1] = 255
-
-    return depth_map, edge_depth
 
 def calculate_dilation_size(depth_value):
     """根据深度值计算膨胀大小"""
@@ -282,9 +258,9 @@ def process_depth_pipeline(depth_file_path):
     # 归一化处理
     diff_norm = cv2.normalize(diff, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     # 可视化所有结果
-    plot__results(uint8_depth_resized, zero_mask, filled)
-    plot_chinese_results(uint8_depth_resized, zero_mask, edge_depth,
-                 dilated_edges, collisions, diff_norm)
+    plot_fill_results(uint8_depth_resized, zero_mask, filled)
+    # plot_chinese_results(uint8_depth_resized, zero_mask, edge_depth,
+    #              dilated_edges, collisions, diff_norm)
 
     # plt.figure(figsize=(5, 5))
     # plt.imshow(collisions, cmap='jet')
@@ -293,34 +269,43 @@ def process_depth_pipeline(depth_file_path):
     # plt.show()
 
     return uint8_depth_resized, collisions
-def plot__results(depth_resized, zero_mask, filled):
-    plt.figure(figsize=(12, 2.8))
+def plot_fill_results(depth_resized, zero_mask, filled):
+    """
+    绘制填充结果的中文标题图像 (1x3)。包括原始深度图、零值掩码和填充深度图。
+    该函数将图像保存为 "2.无效与填充.png"
+    """
+    title_font = 18
+    plt.figure(figsize=(16, 3.6))
 
     plt.subplot(1, 3, 1)
     plt.imshow(uint8_normalize(depth_resized),cmap="jet",  vmin=0, vmax=255)
-    plt.title("原始深度图")
+    plt.title("原始深度图", fontsize=title_font)
     plt.axis("off")
 
 
     plt.subplot(1, 3, 2)
     plt.imshow(zero_mask, cmap="gray", vmin=0, vmax=1)
-    plt.title("零值掩码")
+    plt.title("零值掩码", fontsize=title_font)
     plt.axis("off")
 
     plt.subplot(1, 3, 3)
     plt.imshow(uint8_normalize(filled),cmap="jet", vmin=0, vmax=255)
-    plt.title("填充深度图")
+    plt.title("填充深度图", fontsize=title_font)
     plt.axis("off")
 
     plt.tight_layout()
-    plt.show()
+    plt.savefig("2.无效与填充.png")  # 保存为新文件名
+    plt.close()  # 关闭绘图，释放内存
 
 def plot_chinese_results(depth_resized, zero_mask, edge_depth,
                  dilated_edges, collisions, diff):
+    """
+    绘制处理结果的中文标题图像 (2x3)。包括原始深度图、零值掩码、边缘深度图、膨胀边缘图、碰撞深度图和差异图。
+    """
     plt.figure(figsize=(12, 5))
 
     plt.subplot(2, 3, 1)
-    plt.imshow(uint8_normalize(depth_resized),cmap="jet", vmin=0, vmax=255)
+    plt.imshow(uint8_normalize(depth_resized),cmap="plasma", vmin=0, vmax=255)
     plt.title("原始深度图")
     plt.axis("off")
 
@@ -337,17 +322,17 @@ def plot_chinese_results(depth_resized, zero_mask, edge_depth,
     plt.axis("off")
 
     plt.subplot(2, 3, 4)
-    plt.imshow(dilated_edges, cmap="jet",vmin=0, vmax=255)
+    plt.imshow(dilated_edges, cmap="plasma",vmin=0, vmax=255)
     plt.title("膨胀边缘图")
     plt.axis("off")
 
     plt.subplot(2, 3, 5)
-    plt.imshow(collisions/255.0,cmap="jet", vmin=0, vmax=1)
+    plt.imshow(collisions/255.0,cmap="plasma", vmin=0, vmax=1)
     plt.title("碰撞深度图")
     plt.axis("off")
 
     plt.subplot(2, 3, 6)
-    plt.imshow(diff, cmap="jet",vmin=0, vmax=255)
+    plt.imshow(diff, cmap="plasma",vmin=0, vmax=255)
     plt.title("碰撞深度图与原始深度图的差异")
     plt.axis("off")
 
@@ -356,6 +341,9 @@ def plot_chinese_results(depth_resized, zero_mask, edge_depth,
 
 def plot_results(depth_resized, zero_mask, edge_depth,
                  dilated_edges, collisions, diff):
+    """
+    绘制处理结果的图像 (2x3)。包括原始深度图、零值掩码、边缘深度图、膨胀边缘图、碰撞深度图和差异图。
+    """
     plt.figure(figsize=(25, 10))
 
     plt.subplot(2, 3, 1)
@@ -392,6 +380,149 @@ def plot_results(depth_resized, zero_mask, edge_depth,
     plt.show()
 
 
+def get_resized_and_edge(depth_file_path):
+    """
+    一个简化的处理函数，仅用于获取缩放后的深度图和边缘深度图。
+
+    参数:
+        depth_file_path: 深度图文件路径
+    返回:
+        uint8_depth_resized: 缩放后的原始深度图 (uint8)
+        edge_depth: 边缘深度图
+    """
+    # 读取深度图
+    oridepth_map = cv2.imread(depth_file_path, cv2.IMREAD_UNCHANGED)
+    if oridepth_map is None:
+        raise ValueError(f"无法加载深度图文件：{depth_file_path}")
+    oridepth_map = oridepth_map.astype(np.float32)
+
+    # 预处理阶段：获取缩放图和掩码
+    zero_mask, uint8_depth_resized, uint8_depth_filled = resize_and_fill_depth(oridepth_map, False)
+
+    # 边缘生成阶段
+    _, edge_depth = generate_edges_from_depth(uint8_depth_filled, zero_mask)
+
+    return uint8_depth_resized, edge_depth
+
+
+def generate_edges_from_depth(depth_map, zero_mask, edge_threshold_low=30, edge_threshold_high=50,
+                              return_intermediates=False):
+    """
+    修改：增加 return_intermediates 参数，返回 dilated_zero_mask (安全缓冲区)
+    """
+    # 1. 安全缓冲区 (Dilated Zero Mask)
+    # 对 zero_mask 进行膨胀操作，扩大零值区域，形成保护边界
+    dilated_zero_mask = dilate_zero_mask(zero_mask, dilation_iterations=1)
+
+    # 2. D'_fill (填充深度图副本)
+    # 将膨胀后的零值掩膜应用于深度图
+    depth_map_filled = depth_map.copy()
+    depth_map_filled[dilated_zero_mask == 1] = 255
+
+    # 3. E (二值边缘图)
+    hist_eq_depth = cv2.equalizeHist(depth_map_filled)
+    normalized_depth = cv2.normalize(hist_eq_depth, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    edges = cv2.Canny(normalized_depth, edge_threshold_low, edge_threshold_high)
+
+    # 4. D_filtered (平滑深度图)
+    kernel_size = 3
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+    filtered_depth_map = cv2.erode(depth_map_filled, kernel, iterations=1)
+
+    # 5. D_edge_initial (初始边缘图)
+    edge_depth = depth_map_filled.copy()
+    edge_depth[:, :] = 255
+    edge_depth[edges != 0] = filtered_depth_map[edges != 0]
+
+    edge_depth_initial = edge_depth.copy()
+
+    # 最终过滤
+    edge_depth[zero_mask == 1] = 255
+
+    if return_intermediates:
+        # 返回列表新增 dilated_zero_mask
+        return depth_map, edge_depth, depth_map_filled, edges, filtered_depth_map, edge_depth_initial, dilated_zero_mask
+
+    return depth_map, edge_depth
+
+
+def save_each_results(d_fill, d_fill_copy, e_edges, d_filtered, d_edge_initial, dilated_zero_mask):
+    """
+    修改：增加 dilated_zero_mask 参数并保存为 '安全缓冲区.png'
+    """
+    save_dir = "save_pics"
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+        print(f"创建文件夹: {save_dir}")
+
+    def save_img(data, filename, cmap, vmin=None, vmax=None):
+        plt.figure(figsize=(6, 3.375))  # 16:9
+        plt.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax)
+        plt.axis("off")
+        plt.subplots_adjust(top=1, bottom=0, right=1, left=0, hspace=0, wspace=0)
+        plt.margins(0, 0)
+        plt.gca().xaxis.set_major_locator(plt.NullLocator())
+        plt.gca().yaxis.set_major_locator(plt.NullLocator())
+        save_path = os.path.join(save_dir, filename)
+        plt.savefig(save_path, bbox_inches='tight', pad_inches=0, dpi=300)
+        plt.close()
+        print(f"已保存: {save_path}")
+
+    # 1. D_fill
+    save_img(uint8_normalize(d_fill), "填充深度图.png", 'jet', 0, 255)
+
+    # [新增] 安全缓冲区 (Dilated Zero Mask) - Gray (二值图)
+    save_img(dilated_zero_mask, "安全缓冲区.png", 'gray', 0, 1)
+
+    # 2. D'_fill
+    save_img(uint8_normalize(d_fill_copy), "填充深度图副本.png", 'jet', 0, 255)
+
+    # 3. E
+    save_img(e_edges, "二值边缘图.png", 'gray')
+
+    # 4. D_filtered
+    save_img(uint8_normalize(d_filtered), "平滑深度图.png", 'jet', 0, 255)
+
+    # 5. D_edge_initial
+    save_img(d_edge_initial, "初始边缘图.png", 'gray_r')
+
+def plot_comparison(resized_1, edge_1, resized_2, edge_2):
+    """
+    绘制两张图像及其边缘深度图的对比图 (2x2)。
+
+    参数:
+        resized_1 (np.ndarray): 图像1的缩放深度图
+        edge_1 (np.ndarray): 图像1的边缘深度图
+        resized_2 (np.ndarray): 图像2的缩放深度图
+        edge_2 (np.ndarray): 图像2的边缘深度图
+    """
+    plt.figure(figsize=(14, 9))  # 调整画布大小以便容纳2x2图像
+    title_fontsize = 30
+    # --- 图像 1 ---
+    plt.subplot(2, 2, 1)
+    plt.imshow(uint8_normalize(resized_1) ,cmap='jet', vmin=0, vmax=255)
+    plt.title("(a) 图像1-原始深度图",fontsize=title_fontsize)
+    plt.axis("off")
+
+    plt.subplot(2, 2, 2)
+    plt.imshow(edge_1, cmap="gray_r")
+    plt.title("(b) 图像1-边缘检测图", fontsize=title_fontsize)
+    plt.axis("off")
+
+    # --- 图像 2 ---
+    plt.subplot(2, 2, 3)
+    plt.imshow(uint8_normalize(resized_2), cmap="jet", vmin=0, vmax=255)
+    plt.title("(c) 图像2-原始深度图",fontsize=title_fontsize)
+    plt.axis("off")
+
+    plt.subplot(2, 2, 4)
+    plt.imshow(edge_2, cmap="gray_r")
+    plt.title("(d) 图像2-边缘检测图",fontsize=title_fontsize)
+    plt.axis("off")
+
+    plt.tight_layout()
+    plt.savefig("2.边缘提取对比.png")  # 保存为新文件名
+    plt.close()  # 关闭绘图，释放内存
 # 该函数用于处理深度图像并生成碰撞图像  效果较好
 # 1. 读取深度图像
 # 2. 归一化深度图像（图1 深度图）
@@ -401,22 +532,71 @@ def plot_results(depth_resized, zero_mask, edge_depth,
 # 6. 碰撞图和原始归一化的深度图像的差异（图6 差异图）
 
 if __name__ == "__main__":
-    # 示例文件路径
-    # depth_file = "/home/niu/下载/indoor_train-004/train/HR/02. Cafe/depth_vi/in_00_160315_165831_depth_vi.png"
-    # depth_file = "/home/niu/下载/03_claseeroom_1/1/16.01.20/1/warp_png/in_k_00_160120_000001_wd.png"
-    # depth_file = "/home/niu/下载/03_claseeroom_1/1/16.01.20/1/up_png/in_k_00_160120_000001_ud.png"
-    # depth_file = "/home/niu/下载/depth_images/800.png"
-    depth_file = "/home/niu/workspaces/aerial_gym_ws/src/ori_aerial_gym_simulator/aerial_gym/rl_training/rl_games/anomaly_images/anomaly_11.png"
-    # depth_file = "/home/niu/下载/03_claseeroom_1/1/16.01.20/1/raw_png/in_k_00_160120_000001_rd.png"
-    # depth_file = "/home/niu/下载/03_claseeroom_1/1/16.01.20/1/up_png/in_k_00_160120_000002_ud.png"
-    # depth_file = "/home/niu/workspaces/VAE_ws/datasets/depths/depth_19336.png"  # depth_19336.png
-    # depth_file = "/home/niu/下载/02_cafe_2/2/17.01.19/1/raw_png/in_k_01_170119_000001_rd.png"
-    depth_file = "/home/niu/workspaces/VAE_ws/datasets/depths/depth_36007.png"
-    # depth_file = "/home/niu/workspaces/aerial_gym_ws/src/ori_aerial_gym_simulator/aerial_gym/utils/vae/data_test/depths/depth_image_0.png"
+    depth_file_1 = "/home/niu/下载/01. Warehouse/17.02.01/1/raw_png/in_k_03_170201_000630_rd.png"
+    depth_file_2 = "/home/niu/workspaces/VAE_ws/datasets/depths/depth_36007.png"
 
-    a = time.time()
-    for i in range(1):
-        resized_depth, collision_map = process_depth_pipeline(depth_file)
-    b = time.time() - a
-    print(f"处理时间：{b:.3f}秒")
+    print(f"--- 正在处理 图像 1 (并将保存中间过程) ---")
+    oridepth_map_1 = cv2.imread(depth_file_1, cv2.IMREAD_UNCHANGED).astype(np.float32)
+    zero_mask_1, uint8_depth_resized_1, uint8_depth_filled_1 = resize_and_fill_depth(oridepth_map_1, False)
 
+    # 修改调用：接收 dilated_zero_mask
+    _, edge_img_1, d_fill_copy, e_edges, d_filtered, d_edge_initial, dilated_zero_mask = generate_edges_from_depth(
+        uint8_depth_filled_1, zero_mask_1, return_intermediates=True
+    )
+
+    print("正在保存图像1的中间处理结果...")
+    save_each_results(
+        d_fill=uint8_depth_filled_1,
+        d_fill_copy=d_fill_copy,
+        e_edges=e_edges,
+        d_filtered=d_filtered,
+        d_edge_initial=d_edge_initial,
+        dilated_zero_mask=dilated_zero_mask  # 传入新增参数
+    )
+
+    print(f"\n--- 正在处理 图像 2 ---")
+    oridepth_map_2 = cv2.imread(depth_file_2, cv2.IMREAD_UNCHANGED).astype(np.float32)
+    zero_mask_2, uint8_depth_resized_2, uint8_depth_filled_2 = resize_and_fill_depth(oridepth_map_2, False)
+    _, edge_img_2 = generate_edges_from_depth(uint8_depth_filled_2, zero_mask_2, return_intermediates=False)
+
+    print("\n处理完成，正在绘制对比图...")
+    plot_comparison(uint8_depth_resized_1, edge_img_1, uint8_depth_resized_2, edge_img_2)
+
+
+# if __name__ == "__main__":
+#     # --- 用于对比两张图像的新代码 ---
+#
+#     # 1. 定义两个图像文件路径
+#     # 你可以修改这两个路径来对比你想要的任何两张图像
+#     # depth_file = "/home/niu/下载/indoor_train-004/train/HR/02. Cafe/depth_vi/in_00_160315_165831_depth_vi.png"
+#     depth_file = "/home/niu/下载/01. Warehouse/17.02.01/1/raw_png/in_k_03_170201_000630_rd.png"
+#
+#     depth_file_1 = "/home/niu/下载/01. Warehouse/17.02.01/1/raw_png/in_k_03_170201_000630_rd.png"
+#     # depth_file_1 = "/home/niu/下载/indoor_train-004/train/HR/02. Cafe/depth_vi/in_00_160315_165831_depth_vi.png"    # 开始是用这个出的图
+#     depth_file_2 = "/home/niu/workspaces/VAE_ws/datasets/depths/depth_36007.png"
+#
+#     print(f"--- 正在处理 图像 1 ---")
+#     print(f"路径: {depth_file_1}")
+#     # 2. 处理第一张图像
+#     start_time_1 = time.time()
+#     resized_img_1, edge_img_1 = get_resized_and_edge(depth_file_1)
+#     print(f"图像1 处理耗时: {time.time() - start_time_1:.3f} 秒")
+#
+#     print(f"\n--- 正在处理 图像 2 ---")
+#     print(f"路径: {depth_file_2}")
+#     # 3. 处理第二张图像
+#     start_time_2 = time.time()
+#     resized_img_2, edge_img_2 = get_resized_and_edge(depth_file_2)
+#     print(f"图像2 处理耗时: {time.time() - start_time_2:.3f} 秒")
+#
+#     # 4. 绘制对比图
+#     print("\n处理完成，正在绘制对比图...")
+#     plot_comparison(resized_img_1, edge_img_1, resized_img_2, edge_img_2)
+#
+#     # --- 以下是原有的代码，已被注释掉 ---
+#     a = time.time()
+#     for i in range(1):
+#         resized_depth, collision_map = process_depth_pipeline(depth_file)
+#     b = time.time() - a
+#     print(f"处理时间：{b:.3f}秒")
+#

@@ -11,7 +11,7 @@ This repository is an implement of the paper "Task-Driven Compression for Collis
 准备好深度图后 生成碰撞图使用脚本（这里还需要优化，可能会花费您半天的时间，取决于你的深度图数据集大小和电脑性能）：
 
 ```bash
-python agent_encoder/Project_dataset_generate.py
+python agent_encoder/Project_dataset_generate_save.py
 ```
 
 生成的碰撞图位于`VAE4AerialGym\datasets\colls_offset`
@@ -19,7 +19,7 @@ python agent_encoder/Project_dataset_generate.py
 训练代码使用脚本：
 
 ```bash
-python agent_encoder/train_betaVAE.py
+python agent_encoder/train_dc_VAE.py
 ```
 
 测试时，需要指定模型，然后使用脚本：

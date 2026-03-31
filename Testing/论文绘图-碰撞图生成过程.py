@@ -1,4 +1,5 @@
 import math
+import os
 import time
 import numpy as np
 import cv2
@@ -6,6 +7,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from agent_encoder.utils import *
 from matplotlib import font_manager
+
 # 手动指定字体路径
 font_path = '/usr/share/fonts/MyFonts/simhei.ttf'  # 替换为实际路径
 font_prop = font_manager.FontProperties(fname=font_path)
@@ -13,6 +15,7 @@ font_prop = font_manager.FontProperties(fname=font_path)
 # 设置字体
 plt.rcParams['font.family'] = font_prop.get_name()
 plt.rcParams['axes.unicode_minus'] = False  # 正确显示负号
+
 
 def _plot_preprocess_results(original, mask, resized):
     """可视化预处理结果"""
@@ -72,7 +75,7 @@ def resize_and_fill_depth(depth_map, half_plot=False):
     """
     调整深度图大小并填充零值区域，小于等于MIN_DEPTH的像素值加入零值掩膜
     """
-    depth_map_copy = depth_map.copy()   # 避免直接修改原始深度图
+    depth_map_copy = depth_map.copy()  # 避免直接修改原始深度图
     uint8_depth = uint8_normalize(depth_map_copy)  # 范围0-255
 
     # 将小于等于0 或者像素数量少的 的像素值加入零值掩膜
@@ -92,6 +95,7 @@ def dilate_zero_mask(zero_mask, dilation_iterations=1):
     kernel = np.ones((3, 3), np.uint8)
     dilated_mask = cv2.dilate(zero_mask, kernel, iterations=dilation_iterations)
     return dilated_mask
+
 
 # def generate_edges_from_depth(depth_map, zero_mask, edge_threshold_low=30, edge_threshold_high=50):
 #     edges = cv2.Canny(depth_map, edge_threshold_low, edge_threshold_high)
@@ -122,6 +126,7 @@ def generate_edges_from_depth(depth_map, zero_mask, edge_threshold_low=30, edge_
 
     return depth_map, edge_depth
 
+
 def calculate_dilation_size(depth_value):
     """根据深度值计算膨胀大小"""
     if depth_value <= 0:
@@ -139,6 +144,7 @@ def calculate_dilation_size(depth_value):
 
     # 限制在合理范围内
     return max(min(dilation_radius, MAX_DILATION_SIZE), 1)
+
 
 def pixel_wise_dilation_optimized(depth_map, max_dilation=MAX_DILATION_SIZE):
     """
@@ -198,9 +204,10 @@ def pixel_wise_dilation_optimized(depth_map, max_dilation=MAX_DILATION_SIZE):
                                  MIN_DEPTH * np.ones_like(depth_map))
     return dilated_depth_map.astype(np.uint8)
 
+
 def edge_dilation_optimized(edge_depth, max_dilation=MAX_DILATION_SIZE):
     dilated_edge_depth = np.full_like(edge_depth, 255)
-    edge_pixels = np.where((edge_depth != 255)&(edge_depth > 5))    # 膨胀的像素点需要满足有效像素值
+    edge_pixels = np.where((edge_depth != 255) & (edge_depth > 5))  # 膨胀的像素点需要满足有效像素值
     depth_values = edge_depth[edge_pixels]
     y_coords, x_coords = edge_pixels
     dilation_sizes = np.array([calculate_dilation_size(d) for d in depth_values], dtype=np.int32)
@@ -220,6 +227,7 @@ def edge_dilation_optimized(edge_depth, max_dilation=MAX_DILATION_SIZE):
         np.ones((3, 3), np.uint8))
     return dilated_edge_depth
 
+
 def generate_coll(depth_map1, depth_map2):
     # 创建一个与深度图大小相同的数组来存储结果
     result = np.zeros_like(depth_map1)
@@ -238,12 +246,14 @@ def generate_coll(depth_map1, depth_map2):
 
     return result
 
+
 def generate_max(depth_map1, depth_map2):
     # 保存两图像中的最大值
     result = np.maximum(depth_map1, depth_map2)
     return result
 
-def process_depth_pipeline(depth_file_path):
+
+def process_depth_pipeline(depth_file_path, plt_cmap=None):
     """深度处理流水线封装函数
     参数：
         depth_file_path: 深度图文件路径
@@ -258,19 +268,28 @@ def process_depth_pipeline(depth_file_path):
     oridepth_map = oridepth_map.astype(np.float32)
 
     # 预处理阶段
-    zero_mask, uint8_depth_resized, uint8_depth_filled = resize_and_fill_depth(oridepth_map, False)
-    filled = uint8_depth_filled.copy()
-    # 边缘生成阶段  边缘与填充图分别偏移
-    _, edge_depth = generate_edges_from_depth(uint8_depth_filled, zero_mask)
-    dilated_edges = edge_dilation_optimized(edge_depth)
-    dilated_edges = apply_drone_offset(dilated_edges)   # 对膨胀的边缘图做一个偏移
-    uint8_depth_filled = apply_drone_offset(uint8_depth_filled) # 对填充图做一个偏移
-    uint8_depth_filled = pixel_wise_dilation_optimized(uint8_depth_filled)   # 对填充图做一个逐点膨胀
+    # uint8_depth_resized 是 "原始深度图"
+    # filled_depth 是 "填充深度图"
+    zero_mask, uint8_depth_resized, filled_depth = resize_and_fill_depth(oridepth_map, False)
 
+    # 边缘生成阶段
+    # edge_depth 是 "边缘深度图"
+    _, edge_depth = generate_edges_from_depth(filled_depth.copy(), zero_mask)
+
+    # dilated_edges 是 "膨胀边缘图" (路径 B)
+    dilated_edges = edge_dilation_optimized(edge_depth)
+    dilated_edges = apply_drone_offset(dilated_edges)  # 对膨胀的边缘图做一个偏移
+
+    # offset_depth 是 "偏移深度图" (路径 A 的起点)
+    offset_depth = apply_drone_offset(filled_depth.copy())  # 对填充图做一个偏移
+
+    # 这是路径 A 的膨胀步骤
+    uint8_depth_filled_dilated = pixel_wise_dilation_optimized(offset_depth.copy())  # 对偏移图做一个逐点膨胀
 
     # re_image = generate_max(uint8_depth_resized, uint8_depth_filled) # 原始图和填充图的最小值
     # 后处理阶段
-    collisions = generate_coll(uint8_depth_filled, dilated_edges)
+    # collisions 是 "碰撞深度图"
+    collisions = generate_coll(uint8_depth_filled_dilated, dilated_edges)
     # collisions = cv2.dilate(collisions, np.ones((3, 3), np.uint8), iterations=1)
 
     d1 = uint8_depth_resized.astype(np.float32)
@@ -280,27 +299,46 @@ def process_depth_pipeline(depth_file_path):
     diff = np.abs(d1 - d2)
     diff[diff < 0] = 0
     # 归一化处理
+    # diff_norm 是 "差异图"
     diff_norm = cv2.normalize(diff, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
     # 可视化所有结果
-    plot__results(uint8_depth_resized, zero_mask, filled)
-    plot_chinese_results(uint8_depth_resized, zero_mask, edge_depth,
-                 dilated_edges, collisions, diff_norm)
+    # plot__results(uint8_depth_resized, zero_mask, filled_depth) # 注释掉，因为plot_chinese_results已包含其所有内容
 
-    # plt.figure(figsize=(5, 5))
-    # plt.imshow(collisions, cmap='jet')
-    # plt.axis('off')
-    # plt.tight_layout()
-    # plt.show()
+    # 按照 1.原始, 2.填充, 3.零值, 4.边缘, 5.偏移, 6.膨胀边缘, 7.碰撞, 8.差异 的顺序调用
+    plot_chinese_results(
+        uint8_depth_resized,  # 1. 原始深度图
+        filled_depth,  # 2. 填充深度图
+        zero_mask,  # 3. 零值掩码
+        edge_depth,  # 4. 边缘深度图
+        offset_depth,  # 5. 偏移深度图
+        dilated_edges,  # 6. 膨胀边缘图
+        collisions,  # 7. 碰撞深度图
+        diff_norm,  # 8. 差异图
+        plt_cmap
+    )
 
+    plot_each_results(
+        uint8_depth_resized,
+        filled_depth,
+        zero_mask,
+        edge_depth,
+        offset_depth,
+        dilated_edges,
+        collisions,
+        diff_norm,
+        plt_cmap
+    )
     return uint8_depth_resized, collisions
+
+
 def plot__results(depth_resized, zero_mask, filled):
     plt.figure(figsize=(12, 2.8))
 
     plt.subplot(1, 3, 1)
-    plt.imshow(uint8_normalize(depth_resized),cmap="jet",  vmin=0, vmax=255)
+    plt.imshow(uint8_normalize(depth_resized), cmap="jet", vmin=0, vmax=255)
     plt.title("原始深度图")
     plt.axis("off")
-
 
     plt.subplot(1, 3, 2)
     plt.imshow(zero_mask, cmap="gray", vmin=0, vmax=1)
@@ -308,51 +346,139 @@ def plot__results(depth_resized, zero_mask, filled):
     plt.axis("off")
 
     plt.subplot(1, 3, 3)
-    plt.imshow(uint8_normalize(filled),cmap="jet", vmin=0, vmax=255)
+    plt.imshow(uint8_normalize(filled), cmap="jet", vmin=0, vmax=255)
     plt.title("填充深度图")
     plt.axis("off")
 
     plt.tight_layout()
     plt.show()
 
-def plot_chinese_results(depth_resized, zero_mask, edge_depth,
-                 dilated_edges, collisions, diff):
-    plt.figure(figsize=(12, 5))
 
-    plt.subplot(2, 3, 1)
-    plt.imshow(uint8_normalize(depth_resized),cmap="jet", vmin=0, vmax=255)
-    plt.title("原始深度图")
+def plot_each_results(depth_resized, filled_depth, zero_mask, edge_depth,
+                      offset_depth, dilated_edges, collisions, diff, plt_cmap=None):
+    """
+    将所有中间结果单独保存为图片到 each_pics 文件夹
+    """
+    save_dir = "each_pics"
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    # 定义保存单张图片的辅助函数
+    def save_single(data, filename, cmap, vmin=None, vmax=None):
+        # 使用 matplotlib 保存以保持与拼图一致的配色和显示效果
+        plt.figure(figsize=(6, 3.375))  # 16:9 比例，尺寸可调
+        plt.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax)
+        plt.axis("off")
+
+        # 移除白边，让图片充满画布
+        plt.subplots_adjust(top=1, bottom=0, right=1, left=0, hspace=0, wspace=0)
+        plt.margins(0, 0)
+        plt.gca().xaxis.set_major_locator(plt.NullLocator())
+        plt.gca().yaxis.set_major_locator(plt.NullLocator())
+
+        save_path = os.path.join(save_dir, filename)
+        plt.savefig(save_path, bbox_inches='tight', pad_inches=0, dpi=300)
+        plt.close()
+        print(f"Saved: {save_path}")
+
+    # 1. 原始深度图
+    save_single(uint8_normalize(depth_resized), "1. 原始深度图.png", plt_cmap, 0, 255)
+
+    # 2. 填充深度图
+    save_single(uint8_normalize(filled_depth), "2. 填充深度图.png", plt_cmap, 0, 255)
+
+    # 3. 零值掩码
+    save_single(zero_mask, "3. 零值掩码.png", "gray", 0, 1)
+
+    # 4. 边缘深度图 (注意：原代码中没有设置vmin/vmax，此处保持一致)
+    save_single(edge_depth, "4. 边缘深度图.png", "gray_r")
+
+    # 5. 偏移深度图
+    save_single(offset_depth, "5. 偏移深度图.png", plt_cmap, 0, 255)
+
+    # 6. 膨胀边缘图
+    save_single(dilated_edges, "6. 膨胀边缘图.png", plt_cmap, 0, 255)
+
+    # 7. 碰撞深度图 (原代码显示时除以了255.0并设vmax=1，此处保持一致逻辑)
+    save_single(collisions / 255.0, "7. 碰撞深度图.png", plt_cmap, 0, 1)
+
+    # 8. 差异图
+    save_single(diff, "8. 差异图.png", plt_cmap, 0, 255)
+
+
+def plot_chinese_results(depth_resized, filled_depth, zero_mask, edge_depth,
+                         offset_depth, dilated_edges, collisions, diff, plt_cmap=None):
+    """
+    修改：显示8张图 (2x4)
+    顺序: 1.原始, 2.填充, 3.零值, 4.边缘, 5.偏移, 6.膨胀边缘, 7.碰撞, 8.差异
+    """
+
+    plt.figure(figsize=(29, 11))  # 稍微增加高度(由10改为11)，为下方标题留出更多空间
+    title_fontsize = 40
+    title_y_pos = -0.15  # 【关键修改】设置标题在Y轴方向的位置，负值表示在下方
+
+    # --- 第一行 ---
+
+    # 1. 原始深度图
+    plt.subplot(2, 4, 1)
+    plt.imshow(uint8_normalize(depth_resized), cmap=plt_cmap, vmin=0, vmax=255)
+    plt.title(r"1. 原始深度图 ($D_{{norm}}$)", fontsize=title_fontsize, y=title_y_pos)
     plt.axis("off")
 
+    # 2. 填充深度图
+    plt.subplot(2, 4, 2)
+    plt.imshow(uint8_normalize(filled_depth), cmap=plt_cmap, vmin=0, vmax=255)
+    plt.title(r"2. 填充深度图 ($D_{{fill}}$)", fontsize=title_fontsize, y=title_y_pos)
+    plt.axis("off")
 
-    plt.subplot(2, 3, 2)
+    # 3. 零值掩码
+    plt.subplot(2, 4, 3)
     plt.imshow(zero_mask, cmap="gray", vmin=0, vmax=1)
-    plt.title("零值掩码")
+    plt.title(r"3. 零值掩码 ($M_{{zero}}$)", fontsize=title_fontsize, y=title_y_pos)
     plt.axis("off")
 
-
-    plt.subplot(2, 3, 3)
+    # 4. 边缘深度图
+    plt.subplot(2, 4, 4)
     plt.imshow(edge_depth, cmap="gray_r")
-    plt.title("边缘深度图")
+    plt.title(r"4. 边缘深度图 ($D_{{edge}}$)", fontsize=title_fontsize, y=title_y_pos)
     plt.axis("off")
 
-    plt.subplot(2, 3, 4)
-    plt.imshow(dilated_edges, cmap="jet",vmin=0, vmax=255)
-    plt.title("膨胀边缘图")
+    # --- 第二行 ---
+
+    # 5. 偏移深度图
+    plt.subplot(2, 4, 5)
+    plt.imshow(offset_depth, cmap=plt_cmap, vmin=0, vmax=255)
+    plt.title(r"5. 偏移深度图 ($C_{{offset}}$)", fontsize=title_fontsize, y=title_y_pos)
     plt.axis("off")
 
-    plt.subplot(2, 3, 5)
-    plt.imshow(collisions/255.0,cmap="jet", vmin=0, vmax=1)
-    plt.title("碰撞深度图")
+    # 6. 膨胀边缘图
+    plt.subplot(2, 4, 6)
+    plt.imshow(dilated_edges, cmap=plt_cmap, vmin=0, vmax=255)
+    plt.title(r"6. 膨胀边缘图 ($C_{{dilate}}$)", fontsize=title_fontsize, y=title_y_pos)
     plt.axis("off")
 
-    plt.subplot(2, 3, 6)
-    plt.imshow(diff, cmap="jet",vmin=0, vmax=255)
-    plt.title("碰撞深度图与原始深度图的差异")
+    # 7. 碰撞深度图
+    plt.subplot(2, 4, 7)
+    plt.imshow(collisions / 255.0, cmap=plt_cmap, vmin=0, vmax=1)
+    plt.title(r"7. 碰撞深度图 ($C$)", fontsize=title_fontsize, y=title_y_pos)
     plt.axis("off")
 
+    # 8. 差异图
+    plt.subplot(2, 4, 8)
+    plt.imshow(diff, cmap=plt_cmap, vmin=0, vmax=255)
+    plt.title(r"8. 差异图 ($\Delta$)", fontsize=title_fontsize, y=title_y_pos)
+    plt.axis("off")
+
+    # 调整布局，增加 padding 以防止标题被切断
+    # tight_layout 默认可能不会考虑到手动设置的 y 位置，所以可能需要手动加一点 h_pad
     plt.tight_layout()
-    plt.show()
+
+    # 如果发现标题还是被切掉，可以取消上面的 tight_layout，使用下面的 subplots_adjust
+    # plt.subplots_adjust(bottom=0.1, hspace=0.3)
+
+    plt.savefig("2.碰撞图生成2.png", bbox_inches='tight')  # bbox_inches='tight' 自动裁剪白边，防止标题丢失
+    plt.close()
+
 
 def plot_results(depth_resized, zero_mask, edge_depth,
                  dilated_edges, collisions, diff):
@@ -399,6 +525,7 @@ def plot_results(depth_resized, zero_mask, edge_depth,
 # 4. 生成边缘图（图3边缘检测），边缘图偏置+边缘图膨胀（图4膨胀边缘）
 # 5. 生成碰撞图像（图5 碰撞图=填充图膨胀+边缘图膨胀）
 # 6. 碰撞图和原始归一化的深度图像的差异（图6 差异图）
+# 7. 可视化所有结果
 
 if __name__ == "__main__":
     # 示例文件路径
@@ -406,17 +533,18 @@ if __name__ == "__main__":
     # depth_file = "/home/niu/下载/03_claseeroom_1/1/16.01.20/1/warp_png/in_k_00_160120_000001_wd.png"
     # depth_file = "/home/niu/下载/03_claseeroom_1/1/16.01.20/1/up_png/in_k_00_160120_000001_ud.png"
     # depth_file = "/home/niu/下载/depth_images/800.png"
-    depth_file = "/home/niu/workspaces/aerial_gym_ws/src/ori_aerial_gym_simulator/aerial_gym/rl_training/rl_games/anomaly_images/anomaly_11.png"
-    # depth_file = "/home/niu/下载/03_claseeroom_1/1/16.01.20/1/raw_png/in_k_00_160120_000001_rd.png"
+    # depth_file = "/home/niu/workspaces/aerial_gym_ws/src/ori_aerial_gym_simulator/aerial_gym/rl_training/rl_games/anomaly_images/anomaly_11.png"
+    # depth_file = "/home/niu/下载/03_claseeroom_1/1/16.01.20/1/raw_png/in_k_00_160120_000317_rd.png"
+
     # depth_file = "/home/niu/下载/03_claseeroom_1/1/16.01.20/1/up_png/in_k_00_160120_000002_ud.png"
     # depth_file = "/home/niu/workspaces/VAE_ws/datasets/depths/depth_19336.png"  # depth_19336.png
     # depth_file = "/home/niu/下载/02_cafe_2/2/17.01.19/1/raw_png/in_k_01_170119_000001_rd.png"
-    depth_file = "/home/niu/workspaces/VAE_ws/datasets/depths/depth_36007.png"
-    # depth_file = "/home/niu/workspaces/aerial_gym_ws/src/ori_aerial_gym_simulator/aerial_gym/utils/vae/data_test/depths/depth_image_0.png"
+
+    # depth_file = "/home/niu/workspaces/VAE_ws/datasets/depths/depth_36007.png"                    # 仿真
+    depth_file = "/home/niu/下载/01. Warehouse/17.02.01/1/raw_png/in_k_03_170201_000630_rd.png"       # 真实
 
     a = time.time()
     for i in range(1):
-        resized_depth, collision_map = process_depth_pipeline(depth_file)
+        resized_depth, collision_map = process_depth_pipeline(depth_file, plt_cmap='jet')   # 'jet'  cmap='plasma'
     b = time.time() - a
     print(f"处理时间：{b:.3f}秒")
-

@@ -1,24 +1,41 @@
 import math
 import time
+
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
-from agent_encoder.utils import *
-from matplotlib import font_manager
-# 手动指定字体路径
-font_path = '/usr/share/fonts/MyFonts/simhei.ttf'  # 替换为实际路径
-font_prop = font_manager.FontProperties(fname=font_path)
 
-# 设置字体
-plt.rcParams['font.family'] = font_prop.get_name()
-plt.rcParams['axes.unicode_minus'] = False  # 正确显示负号
+# 全局常量配置
+IMAGE_SIZE = (480, 270)
+CAMERA_HFOV_DEG = 87
+DRONE_SIZE_METERS = 0.5  # 无人机直径0.5米
+DRONE_HALF_SIZE_METERS = DRONE_SIZE_METERS / 2  # 无人机半径
+MAX_DILATION_SIZE = 50
+
+MIN_DEPTH = int(0.2 * 255 / 10)  # 5
+MAX_DEPTH = 255
+
+ASPECT_RATIO = IMAGE_SIZE[0] / IMAGE_SIZE[1]  # ≈ 1.7778
+HFOV_RAD = np.radians(CAMERA_HFOV_DEG)
+VFOV_RAD = 2 * np.arctan(np.tan(HFOV_RAD / 2) / ASPECT_RATIO)
+# vfov_deg = np.degrees(VFOV_RAD)  # ≈ 56.1°
+
+fx = 252.91646  # IMAGE_SIZE[0] / (2 * np.tan(HFOV_RAD / 2))  # ≈ 252.9（假设无畸变）
+fy = 252.91646  # IMAGE_SIZE[1] / (2 * np.tan(VFOV_RAD / 2))  # ≈ 252.9
+
+CAMERA_MATRIX = np.array([
+    [fx, 0, IMAGE_SIZE[0] / 2],
+    [0, fy, IMAGE_SIZE[1] / 2],
+    [0, 0, 1]
+])
+
 
 def _plot_preprocess_results(original, mask, resized):
     """可视化预处理结果"""
     plt.figure(figsize=(25, 10))
     plt.subplot(1, 3, 1)
-    plt.imshow(uint8_normalize(original), cmap="gray", vmin=0, vmax=255)
+    plt.imshow(custom_normalize(original), cmap="gray", vmin=0, vmax=255)
     plt.title("Original Depth Map")
     plt.axis("off")
 
@@ -36,48 +53,33 @@ def _plot_preprocess_results(original, mask, resized):
     plt.show()
 
 
-def filter_edge_and_min_depth(depth_img, edge_width=2):
+def custom_normalize(map):
     """
-    标记无效像素：图像边缘（宽度edge_width）和深度值 < MIN_DEPTH 的像素
-
-    参数:
-        depth_img (np.ndarray): uint8深度图，形状 (H, W)，范围 [0, 255]
-        MIN_DEPTH (int): 深度阈值，小于此值的像素视为无效
-        edge_width (int): 图像边缘的无效像素宽度（默认2）
-
-    返回:
-        invalid_mask (np.ndarray): 无效像素掩码（True=无效）
+    将深度图归一化到[0, 255]范围，(大于0)&(小于MIN_DEPTH)的像素值设置为MIN_DEPTH
+    返回值范围[0, 255]的深度图
     """
-    assert depth_img.dtype == np.uint8 and len(depth_img.shape) == 2, "输入必须是uint8单通道深度图"
-
-    # --- 1. 标记深度过小的像素 ---
-    zero_mask = (depth_img < MIN_DEPTH).astype(bool)
-
-    # --- 2. 标记图像边缘像素 ---
-    edge_mask = np.zeros_like(zero_mask, dtype=bool)
-
-    # # 标记上下左右边缘（宽度为edge_width）
-    # edge_mask[:edge_width, :] = True  # 上边缘
-    # edge_mask[-edge_width:, :] = True  # 下边缘
-    # edge_mask[:, :edge_width] = True  # 左边缘
-    # edge_mask[:, -edge_width:] = True  # 右边缘
-
-    # --- 合并掩码 ---
-    invalid_mask = zero_mask | edge_mask
-
-    return invalid_mask.astype(np.uint8)
+    max_val = np.max(map)
+    if max_val > 255:
+        normalized_depth_map = map * 255 / 7000  # DIML/CVl RGB-D 除以1000得到米  不再使用 SUN RGB-D
+    else:
+        normalized_depth_map = map.copy()
+    normalized_depth_map[normalized_depth_map > MAX_DEPTH] = MAX_DEPTH
+    normalized_depth_map[normalized_depth_map < MIN_DEPTH] = 0
+    return normalized_depth_map.astype(np.uint8)
 
 
 def resize_and_fill_depth(depth_map, half_plot=False):
     """
     调整深度图大小并填充零值区域，小于等于MIN_DEPTH的像素值加入零值掩膜
     """
-    depth_map_copy = depth_map.copy()   # 避免直接修改原始深度图
-    uint8_depth = uint8_normalize(depth_map_copy)  # 范围0-255
+    depth_map_copy = depth_map.copy()
+    # 其他部分保持不变
+    uint8_depth = custom_normalize(depth_map_copy)
 
-    # 将小于等于0 或者像素数量少的 的像素值加入零值掩膜
-    zero_mask = filter_edge_and_min_depth(uint8_depth)
+    # 将小于等于0的像素值加入零值掩膜
+    zero_mask = (uint8_depth <= MIN_DEPTH).astype(np.uint8)
 
+    uint8_depth = apply_drone_offset(uint8_depth)
     uint8_depth_fill = cv2.inpaint(uint8_depth, zero_mask, 3, cv2.INPAINT_TELEA)
     uint8_depth_fill = cv2.resize(uint8_depth_fill, (480, 270), interpolation=cv2.INTER_LINEAR)
     zero_mask_resized = cv2.resize(zero_mask, (480, 270), interpolation=cv2.INTER_NEAREST).astype(np.uint8)
@@ -93,9 +95,17 @@ def dilate_zero_mask(zero_mask, dilation_iterations=1):
     dilated_mask = cv2.dilate(zero_mask, kernel, iterations=dilation_iterations)
     return dilated_mask
 
+
 # def generate_edges_from_depth(depth_map, zero_mask, edge_threshold_low=30, edge_threshold_high=50):
 #     edges = cv2.Canny(depth_map, edge_threshold_low, edge_threshold_high)
-#     return depth_map, edges
+#
+#     edge_depth = depth_map.copy()
+#     edge_depth[:, :] = 255
+#     edge_depth[edges != 0] = depth_map[edges != 0]  # 边缘不为255的区域保留原始深度
+#
+#     # # # 再次使用zero_mask过滤掉零值区域的边缘
+#     # edge_depth[zero_mask == 1] = 255
+#     return depth_map, edge_depth
 
 def generate_edges_from_depth(depth_map, zero_mask, edge_threshold_low=30, edge_threshold_high=50):
     # 对zero_mask进行膨胀操作，扩大零值区域
@@ -105,7 +115,7 @@ def generate_edges_from_depth(depth_map, zero_mask, edge_threshold_low=30, edge_
     depth_map_filled = depth_map.copy()
     depth_map_filled[dilated_zero_mask == 1] = 255  # 或者使用周围像素的平均值进行填充
 
-    hist_eq_depth = cv2.equalizeHist(depth_map_filled)  # 直方图均衡化
+    hist_eq_depth = cv2.equalizeHist(depth_map_filled)
     normalized_depth = cv2.normalize(hist_eq_depth, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     edges = cv2.Canny(normalized_depth, edge_threshold_low, edge_threshold_high)
 
@@ -121,6 +131,7 @@ def generate_edges_from_depth(depth_map, zero_mask, edge_threshold_low=30, edge_
     edge_depth[zero_mask == 1] = 255
 
     return depth_map, edge_depth
+
 
 def calculate_dilation_size(depth_value):
     """根据深度值计算膨胀大小"""
@@ -140,6 +151,7 @@ def calculate_dilation_size(depth_value):
     # 限制在合理范围内
     return max(min(dilation_radius, MAX_DILATION_SIZE), 1)
 
+
 def pixel_wise_dilation_optimized(depth_map, max_dilation=MAX_DILATION_SIZE):
     """
     逐像素膨胀深度图，考虑所有像素点，并按深度值排序以避免远处覆盖近处。
@@ -149,7 +161,7 @@ def pixel_wise_dilation_optimized(depth_map, max_dilation=MAX_DILATION_SIZE):
         max_dilation (int): 最大膨胀半径
 
     返回：
-        dilated_depth_map (numpy.ndarray): 膨胀后的深度图，范围 [0, 255]
+        dilated_depth_map (numpy.ndarray): 膨胀后的深度图
     """
     # 初始化膨胀后的深度图，使用0填充
     dilated_depth_map = np.full_like(depth_map, 0)
@@ -198,6 +210,7 @@ def pixel_wise_dilation_optimized(depth_map, max_dilation=MAX_DILATION_SIZE):
                                  MIN_DEPTH * np.ones_like(depth_map))
     return dilated_depth_map.astype(np.uint8)
 
+
 def edge_dilation_optimized(edge_depth, max_dilation=MAX_DILATION_SIZE):
     dilated_edge_depth = np.full_like(edge_depth, 255)
     edge_pixels = np.where((edge_depth != 255)&(edge_depth > 5))    # 膨胀的像素点需要满足有效像素值
@@ -220,6 +233,7 @@ def edge_dilation_optimized(edge_depth, max_dilation=MAX_DILATION_SIZE):
         np.ones((3, 3), np.uint8))
     return dilated_edge_depth
 
+
 def generate_coll(depth_map1, depth_map2):
     # 创建一个与深度图大小相同的数组来存储结果
     result = np.zeros_like(depth_map1)
@@ -238,10 +252,6 @@ def generate_coll(depth_map1, depth_map2):
 
     return result
 
-def generate_max(depth_map1, depth_map2):
-    # 保存两图像中的最大值
-    result = np.maximum(depth_map1, depth_map2)
-    return result
 
 def process_depth_pipeline(depth_file_path):
     """深度处理流水线封装函数
@@ -257,21 +267,27 @@ def process_depth_pipeline(depth_file_path):
         raise ValueError(f"无法加载深度图文件：{depth_file_path}")
     oridepth_map = oridepth_map.astype(np.float32)
 
+    # # 确保深度图中的值在 [0, MAX_DEPTH] 范围内
+    # oridepth_map = np.clip(oridepth_map, 0, MAX_DEPTH)
+
     # 预处理阶段
     zero_mask, uint8_depth_resized, uint8_depth_filled = resize_and_fill_depth(oridepth_map, False)
-    filled = uint8_depth_filled.copy()
-    # 边缘生成阶段  边缘与填充图分别偏移
-    _, edge_depth = generate_edges_from_depth(uint8_depth_filled, zero_mask)
+
+    # 边缘生成阶段
+    _, edge_depth = generate_edges_from_depth(uint8_depth_resized, zero_mask)
     dilated_edges = edge_dilation_optimized(edge_depth)
-    dilated_edges = apply_drone_offset(dilated_edges)   # 对膨胀的边缘图做一个偏移
-    uint8_depth_filled = apply_drone_offset(uint8_depth_filled) # 对填充图做一个偏移
-    uint8_depth_filled = pixel_wise_dilation_optimized(uint8_depth_filled)   # 对填充图做一个逐点膨胀
 
+    # # 将深度图值转换为实际距离（米）,然后考虑到碰撞实际位置的偏置后 从距离转换回深度
+    # range_map = (uint8_depth_fill * 10.0 / 255) - DRONE_HALF_SIZE_METERS
+    # range_map = np.clip(range_map, 0, 10.0)     # 小于0.2m表示无效距离
+    # uint8_depth_fill = ((range_map / 10.0) * 255).astype(np.uint8)
+    # 对fill图做一个逐点膨胀呢
+    uint8_depth_fill = pixel_wise_dilation_optimized(uint8_depth_filled)
 
-    # re_image = generate_max(uint8_depth_resized, uint8_depth_filled) # 原始图和填充图的最小值
     # 后处理阶段
-    collisions = generate_coll(uint8_depth_filled, dilated_edges)
-    # collisions = cv2.dilate(collisions, np.ones((3, 3), np.uint8), iterations=1)
+    collisions = generate_coll(uint8_depth_fill, dilated_edges)
+    # collisions = cv2.dilate(collisions, np.ones((2, 2), np.uint8), iterations=1)
+    # collisions = apply_drone_offset(collisions)
 
     d1 = uint8_depth_resized.astype(np.float32)
     d2 = collisions.astype(np.float32)
@@ -282,109 +298,53 @@ def process_depth_pipeline(depth_file_path):
     # 归一化处理
     diff_norm = cv2.normalize(diff, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     # 可视化所有结果
-    plot__results(uint8_depth_resized, zero_mask, filled)
-    plot_chinese_results(uint8_depth_resized, zero_mask, edge_depth,
-                 dilated_edges, collisions, diff_norm)
-
-    # plt.figure(figsize=(5, 5))
-    # plt.imshow(collisions, cmap='jet')
-    # plt.axis('off')
-    # plt.tight_layout()
-    # plt.show()
+    plot_results(uint8_depth_resized, zero_mask, uint8_depth_filled, uint8_depth_fill,
+                 edge_depth, dilated_edges, collisions, diff_norm)
 
     return uint8_depth_resized, collisions
-def plot__results(depth_resized, zero_mask, filled):
-    plt.figure(figsize=(12, 2.8))
-
-    plt.subplot(1, 3, 1)
-    plt.imshow(uint8_normalize(depth_resized),cmap="jet",  vmin=0, vmax=255)
-    plt.title("原始深度图")
-    plt.axis("off")
 
 
-    plt.subplot(1, 3, 2)
-    plt.imshow(zero_mask, cmap="gray", vmin=0, vmax=1)
-    plt.title("零值掩码")
-    plt.axis("off")
-
-    plt.subplot(1, 3, 3)
-    plt.imshow(uint8_normalize(filled),cmap="jet", vmin=0, vmax=255)
-    plt.title("填充深度图")
-    plt.axis("off")
-
-    plt.tight_layout()
-    plt.show()
-
-def plot_chinese_results(depth_resized, zero_mask, edge_depth,
+def plot_results(depth_resized, zero_mask, depth_map_resized, filled_depth_map, edge_depth,
                  dilated_edges, collisions, diff):
-    plt.figure(figsize=(12, 5))
+    plt.figure(figsize=(25, 6))
 
-    plt.subplot(2, 3, 1)
-    plt.imshow(uint8_normalize(depth_resized),cmap="jet", vmin=0, vmax=255)
-    plt.title("原始深度图")
-    plt.axis("off")
-
-
-    plt.subplot(2, 3, 2)
-    plt.imshow(zero_mask, cmap="gray", vmin=0, vmax=1)
-    plt.title("零值掩码")
-    plt.axis("off")
-
-
-    plt.subplot(2, 3, 3)
-    plt.imshow(edge_depth, cmap="gray_r")
-    plt.title("边缘深度图")
-    plt.axis("off")
-
-    plt.subplot(2, 3, 4)
-    plt.imshow(dilated_edges, cmap="jet",vmin=0, vmax=255)
-    plt.title("膨胀边缘图")
-    plt.axis("off")
-
-    plt.subplot(2, 3, 5)
-    plt.imshow(collisions/255.0,cmap="jet", vmin=0, vmax=1)
-    plt.title("碰撞深度图")
-    plt.axis("off")
-
-    plt.subplot(2, 3, 6)
-    plt.imshow(diff, cmap="jet",vmin=0, vmax=255)
-    plt.title("碰撞深度图与原始深度图的差异")
-    plt.axis("off")
-
-    plt.tight_layout()
-    plt.show()
-
-def plot_results(depth_resized, zero_mask, edge_depth,
-                 dilated_edges, collisions, diff):
-    plt.figure(figsize=(25, 10))
-
-    plt.subplot(2, 3, 1)
-    plt.imshow(uint8_normalize(depth_resized), cmap="jet", vmin=0, vmax=255)
+    plt.subplot(2, 4, 1)
+    plt.imshow(custom_normalize(depth_resized), vmin=0, vmax=255)
     plt.title("Resized Original Depth")
     plt.axis("off")
 
-    plt.subplot(2, 3, 2)
+    plt.subplot(2, 4, 2)
     plt.imshow(zero_mask, cmap="gray", vmin=0, vmax=1)
     plt.title("Zero Mask")
     plt.axis("off")
 
-    plt.subplot(2, 3, 3)
+    plt.subplot(2, 4, 3)
+    plt.imshow(depth_map_resized, vmin=0, vmax=255)
+    plt.title("Filled Depth")
+    plt.axis("off")
+
+    plt.subplot(2, 4, 4)
+    plt.imshow(filled_depth_map, vmin=0, vmax=255)
+    plt.title("Collision Filled Depth")
+    plt.axis("off")
+
+    plt.subplot(2, 4, 5)
     plt.imshow(edge_depth, cmap="gray_r")
     plt.title("Edge Depth")
     plt.axis("off")
 
-    plt.subplot(2, 3, 4)
-    plt.imshow(dilated_edges, cmap="jet", vmin=0, vmax=255)
+    plt.subplot(2, 4, 6)
+    plt.imshow(dilated_edges, vmin=0, vmax=255)
     plt.title("Dilated Edges")
     plt.axis("off")
 
-    plt.subplot(2, 3, 5)
-    plt.imshow(collisions, cmap="jet", vmin=0, vmax=1)
+    plt.subplot(2, 4, 7)
+    plt.imshow(collisions/255)
     plt.title("Collisions")
     plt.axis("off")
 
-    plt.subplot(2, 3, 6)
-    plt.imshow(diff, cmap="jet", vmin=0, vmax=255)
+    plt.subplot(2, 4, 8)
+    plt.imshow(diff, vmin=0, vmax=255)
     plt.title("Difference")
     plt.axis("off")
 
@@ -392,26 +352,40 @@ def plot_results(depth_resized, zero_mask, edge_depth,
     plt.show()
 
 
-# 该函数用于处理深度图像并生成碰撞图像  效果较好
-# 1. 读取深度图像
-# 2. 归一化深度图像（图1 深度图）
-# 3. 生成填充图和零值掩码（图2 零值掩码），填充图偏置+填充图膨胀
-# 4. 生成边缘图（图3边缘检测），边缘图偏置+边缘图膨胀（图4膨胀边缘）
-# 5. 生成碰撞图像（图5 碰撞图=填充图膨胀+边缘图膨胀）
-# 6. 碰撞图和原始归一化的深度图像的差异（图6 差异图）
+def apply_drone_offset(original_map):
+    """应用无人机尺寸偏移"""
+    depth_float = original_map.astype(np.float32) / MAX_DEPTH * 10.0  # 转换为米
+    offset_depth = depth_float - DRONE_HALF_SIZE_METERS  # 减去无人机尺寸
+    offset_depth[offset_depth < 0] = 0  # 处理负值
+    offset_depth_map = (offset_depth / 10.0 * MAX_DEPTH).astype(np.uint8)  # 转回深度图范围
+    return offset_depth_map
 
+
+"""
+该文件实现了一个从深度图像生成碰撞图像的处理流水线。
+该流水线包括以下步骤：
+1. 读取深度图像（图1 深度图）
+2. 预处理深度图像，包括调整大小和填充零值区域（图2 零值mask）和填充深度图像（图3 填充深度图）
+4. 对填充后的深度图像进行膨胀（图4 填充后膨胀图）
+3. 从原始深度图中生成边缘图像（图5 边缘图像）
+4. 逐像素膨胀边缘图像（图6 膨胀边缘）
+5. 生成碰撞图像（图7 碰撞=填充膨胀图+膨胀边缘）
+6. 绘制碰撞图与原始深度图像的差异（图8 差异）
+注意此处没有实现 深度偏移  ！！！！！todo
+由于对零值的填充，导致有些无效像素的值被覆盖，可能会导致远处的像素覆盖近处的像素。没有无效像素时可以使用该方法中的绘图来作为展示
+"""
 if __name__ == "__main__":
     # 示例文件路径
+
     # depth_file = "/home/niu/下载/indoor_train-004/train/HR/02. Cafe/depth_vi/in_00_160315_165831_depth_vi.png"
-    # depth_file = "/home/niu/下载/03_claseeroom_1/1/16.01.20/1/warp_png/in_k_00_160120_000001_wd.png"
-    # depth_file = "/home/niu/下载/03_claseeroom_1/1/16.01.20/1/up_png/in_k_00_160120_000001_ud.png"
+    # depth_file = "/home/niu/下载/indoor_train-004/train/HR/04. Church/depth_vi/in_01_160225_160701_depth_vi.png"
     # depth_file = "/home/niu/下载/depth_images/800.png"
-    depth_file = "/home/niu/workspaces/aerial_gym_ws/src/ori_aerial_gym_simulator/aerial_gym/rl_training/rl_games/anomaly_images/anomaly_11.png"
+    # depth_file = "/home/niu/workspaces/aerial_gym_ws/src/aerial_gym_simulator/aerial_gym/rl_training/rl_games/anomaly_images/anomaly_53.png"
     # depth_file = "/home/niu/下载/03_claseeroom_1/1/16.01.20/1/raw_png/in_k_00_160120_000001_rd.png"
-    # depth_file = "/home/niu/下载/03_claseeroom_1/1/16.01.20/1/up_png/in_k_00_160120_000002_ud.png"
+    depth_file = "/home/niu/下载/03_claseeroom_1/1/16.01.20/1/up_png/in_k_00_160120_000002_ud.png"
     # depth_file = "/home/niu/workspaces/VAE_ws/datasets/depths/depth_19336.png"  # depth_19336.png
+    # depth_file = "/home/niu/workspaces/aerial_gym_ws/src/aerial_gym_simulator/aerial_gym/rl_training/rl_games/anomaly_images/anomaly_11.png"
     # depth_file = "/home/niu/下载/02_cafe_2/2/17.01.19/1/raw_png/in_k_01_170119_000001_rd.png"
-    depth_file = "/home/niu/workspaces/VAE_ws/datasets/depths/depth_36007.png"
     # depth_file = "/home/niu/workspaces/aerial_gym_ws/src/ori_aerial_gym_simulator/aerial_gym/utils/vae/data_test/depths/depth_image_0.png"
 
     a = time.time()
@@ -419,4 +393,3 @@ if __name__ == "__main__":
         resized_depth, collision_map = process_depth_pipeline(depth_file)
     b = time.time() - a
     print(f"处理时间：{b:.3f}秒")
-
