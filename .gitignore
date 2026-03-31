@@ -11,3 +11,4 @@ agent_encoder/weights_rgb/
 figure_result/figs/
 figure_result/beta*
 little_test/
+**/__pycache__/
